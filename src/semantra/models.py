@@ -14,6 +14,8 @@ minilm_model_name = "sentence-transformers/all-MiniLM-L6-v2"
 mpnet_model_name = "sentence-transformers/all-mpnet-base-v2"
 sgpt_model_name = "Muennighoff/SGPT-125M-weightedmean-msmarco-specb-bitfit"
 sgpt_1_3B_model_name = "Muennighoff/SGPT-1.3B-weightedmean-msmarco-specb-bitfit"
+intfloat_e5_large_v2 = "intfloat/e5-large-v2"
+mixedbread_ai_mxbai_embed_large_v1 = "mixedbread-ai/mxbai-embed-large-v1"
 
 
 def mean_pooling(model_output, attention_mask):
@@ -159,12 +161,21 @@ class TransformerModel(BaseModel):
         query_token_post=None,
         asymmetric=False,
         cuda=None,
+        mps=None,
     ):
         if cuda is None:
             cuda = torch.cuda.is_available()
+        if mps is None:
+            mps = torch.backends.mps.is_available()
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name)
+
+        # Set device once and reuse
+        self.device = (torch.device("cuda") if cuda else
+                       torch.device("mps") if mps else
+                       torch.device("cpu"))
+        self.model = self.model.to(self.device)
 
         # Get tokens
         self.pre_post_tokens = [
@@ -195,10 +206,6 @@ class TransformerModel(BaseModel):
         )
 
         self.asymmetric = asymmetric
-
-        self.cuda = cuda
-        if self.cuda:
-            self.model = self.model.cuda()
 
     def get_config(self):
         return {
@@ -281,35 +288,34 @@ class TransformerModel(BaseModel):
         input_ids = torch.nn.utils.rnn.pad_sequence(
             [
                 self.normalize_input_ids(
-                    tokens["input_ids"][0].index_select(0, torch.tensor(range(i, j))),
+                    tokens["input_ids"][0][i:j].to(self.device),  # Directly slice on device
+                    # tokens["input_ids"][0].index_select(0, torch.tensor(range(i, j)).to(self.device)),
                     is_query,
                 )
                 for i, j in offsets
             ],
             batch_first=True,
             padding_value=zero_if_none(self.tokenizer.pad_token_id),
-        )
+        ).to(self.device)
+
         attention_mask = torch.nn.utils.rnn.pad_sequence(
             [
                 self.normalize_attention_mask(
-                    tokens["attention_mask"][0].index_select(
-                        0, torch.tensor(range(i, j))
-                    ),
+                    tokens["input_ids"][0][i:j].to(self.device),  # Directly slice on device
+                    # tokens["attention_mask"][0].index_select(0, torch.tensor(range(i, j)).to(self.device)),
                     is_query,
                 )
                 for i, j in offsets
             ],
             batch_first=True,
             padding_value=0,
-        )
-        if self.cuda:
-            input_ids = input_ids.cuda()
-            attention_mask = attention_mask.cuda()
+        ).to(self.device)
+
+        # Perform computation on the correct device
         with torch.no_grad():
-            model_output = self.model(
-                input_ids=input_ids, attention_mask=attention_mask
-            )
-        return mean_pooling(model_output, attention_mask)
+            model_output = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        embeddings = mean_pooling(model_output, attention_mask)
+        return embeddings
 
 
 models = {
