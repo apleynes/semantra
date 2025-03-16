@@ -10,6 +10,7 @@ import pkg_resources
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request, send_file, send_from_directory
 from tqdm import tqdm
+from joblib import Parallel, delayed
 
 from .models import BaseModel, TransformerModel, as_numpy, models
 from .pdf import get_pdf_content
@@ -344,6 +345,47 @@ def process_windows(windows: str) -> "list[tuple[int, int, int]]":
             yield int(size), int(offset), int(rewind)
         else:
             yield int(window), 0, 0
+            
+
+def get_results(queries, preferences, embedding, documents, num_results, parallel=False):
+    results = []
+    if parallel:
+        results = Parallel(n_jobs=os.cpu_count() // 2, backend="loky")(delayed(calculate_embedding_distances_and_format)(queries, preferences, embedding, num_results, doc) for doc in documents.values())
+    else:
+        for doc in documents.values():
+            sub_results = calculate_embedding_distances_and_format(queries, preferences, embedding, num_results, doc)
+            results.append([doc.filename, sub_results])
+    return results
+
+
+def calculate_embedding_distances_and_format(queries, preferences, embedding, num_results, doc):
+    embeddings = doc.embeddings
+
+    # Get kNN with cosine similarity
+    distances = np.dot(embeddings, embedding) / (
+        np.linalg.norm(embeddings, axis=1) * np.linalg.norm(embedding)
+    )
+    sorted_ix = np.argsort(-distances)
+
+    text_chunks = doc.text_chunks
+    offsets = doc.offsets[0]
+    sub_results = []
+    for index in sorted_ix[:num_results]:
+        distance = float(distances[index])
+        offset = offsets[index]
+        text = join_text_chunks(text_chunks[offset[0] : offset[1]])
+        sub_results.append(
+            {
+                "text": text,
+                "distance": distance,
+                "offset": offset,
+                "index": int(index),
+                "filename": doc.filename,
+                "queries": queries,
+                "preferences": preferences,
+            }
+        )
+    return sub_results
 
 
 @click.command()
@@ -692,35 +734,7 @@ def main(
         # Get combined query and preference embedding
         embedding = model.embed_queries_and_preferences(queries, preferences, documents)
 
-        results = []
-        for doc in documents.values():
-            embeddings = doc.embeddings
-
-            # Get kNN with cosine similarity
-            distances = np.dot(embeddings, embedding) / (
-                np.linalg.norm(embeddings, axis=1) * np.linalg.norm(embedding)
-            )
-            sorted_ix = np.argsort(-distances)
-
-            text_chunks = doc.text_chunks
-            offsets = doc.offsets[0]
-            sub_results = []
-            for index in sorted_ix[:num_results]:
-                distance = float(distances[index])
-                offset = offsets[index]
-                text = join_text_chunks(text_chunks[offset[0] : offset[1]])
-                sub_results.append(
-                    {
-                        "text": text,
-                        "distance": distance,
-                        "offset": offset,
-                        "index": int(index),
-                        "filename": doc.filename,
-                        "queries": queries,
-                        "preferences": preferences,
-                    }
-                )
-            results.append([doc.filename, sub_results])
+        results = get_results(queries, preferences, embedding, documents, num_results, parallel=True)
         return jsonify(sort_results(results, True))
 
     @app.route("/api/querysvm", methods=["POST"])
