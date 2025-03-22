@@ -1,3 +1,4 @@
+import glob
 import hashlib
 import io
 import json
@@ -391,6 +392,13 @@ def calculate_embedding_distances_and_format(queries, preferences, embedding, nu
 @click.command()
 @click.argument("filename", type=click.Path(exists=True), nargs=-1)
 @click.option(
+    "--search_dirs",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Search current directory and subdirectories for files to process",
+)
+@click.option(
     "--model",
     type=click.Choice(models.keys(), case_sensitive=True),
     default="mpnet",
@@ -570,6 +578,7 @@ def calculate_embedding_distances_and_format(queries, preferences, embedding, nu
 )
 def main(
     filename,
+    search_dirs=False,
     windows="128_0_16",
     no_server=False,
     port=8080,
@@ -620,7 +629,10 @@ def main(
     load_dotenv(env_path)
 
     if filename is None or len(filename) == 0:
-        raise click.UsageError("Must provide a filename to process/query")
+        if search_dirs:
+            filename = glob.glob(os.path.join(os.getcwd(), "**", "*.pdf"), recursive=True)
+        else:
+            raise click.UsageError("Must provide a filename to process/query")
 
     processed_windows = list(process_windows(windows))
 
