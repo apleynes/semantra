@@ -289,7 +289,6 @@ class TransformerModel(BaseModel):
             [
                 self.normalize_input_ids(
                     tokens["input_ids"][0][i:j].to(self.device),  # Directly slice on device
-                    # tokens["input_ids"][0].index_select(0, torch.tensor(range(i, j)).to(self.device)),
                     is_query,
                 )
                 for i, j in offsets
@@ -301,8 +300,7 @@ class TransformerModel(BaseModel):
         attention_mask = torch.nn.utils.rnn.pad_sequence(
             [
                 self.normalize_attention_mask(
-                    tokens["input_ids"][0][i:j].to(self.device),  # Directly slice on device
-                    # tokens["attention_mask"][0].index_select(0, torch.tensor(range(i, j)).to(self.device)),
+                    tokens["attention_mask"][0][i:j].to(self.device),  # Directly slice on device
                     is_query,
                 )
                 for i, j in offsets
